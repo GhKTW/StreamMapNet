@@ -1,4 +1,3 @@
-from turtle import forward
 import warnings
 try:
     from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttention

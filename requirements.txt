@@ -1,2 +1,2 @@
-av2
-nuscenes-devkit
+av2==0.2.1
+nuscenes-devkit==1.1.10
