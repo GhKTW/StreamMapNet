@@ -33,6 +33,8 @@ docker run -itd \
     --ipc=host \
     --shm-size=8g \
     --user "$(id -u):$(id -g)" \
+    -v /etc/passwd:/etc/passwd:ro \
+    -v /etc/group:/etc/group:ro \
     -e HOME=/tmp \
     -e TORCH_HOME=/workspace/StreamMapNet/.cache/torch \
     -v "${REPO_DIR}:/workspace/StreamMapNet" \
