@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     FORCE_CUDA=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.8 python3.8-dev python3-pip git wget ca-certificates \
+        python3.8 python3.8-dev python3-pip git openssh-client wget ca-certificates \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 ninja-build \
     && ln -sf /usr/bin/python3.8 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
