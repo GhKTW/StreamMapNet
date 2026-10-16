@@ -48,10 +48,12 @@ class VectorEvaluate(object):
             dataset = 'av2'
         else:
             dataset = 'nusc'
+        # cache gts next to the annotation file, so different annotation sets don't share a cache
+        tmp_dir = os.path.dirname(self.dataset.ann_file)
         if self.new_split:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl'
+            tmp_file = os.path.join(tmp_dir, f'tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}_newsplit.pkl')
         else:
-            tmp_file = f'./tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}.pkl'
+            tmp_file = os.path.join(tmp_dir, f'tmp_gts_{dataset}_{roi_size[0]}x{roi_size[1]}.pkl')
         if os.path.exists(tmp_file):
             print(f'loading cached gts from {tmp_file}')
             gts = mmcv.load(tmp_file)
