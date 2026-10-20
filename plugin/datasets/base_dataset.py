@@ -26,6 +26,9 @@ class BaseMapDataset(Dataset):
         interval (int): annotation load interval
         work_dir (str): path to work dir
         test_mode (bool): whether in test mode
+        reverse_time (bool): reverse the frame order inside every scene, so that
+            streaming models see future frames first (AMap teacher)
+        eval_regions (bool): also report AP on the ahead (x>0) / rear (x<0) halves
     """
     def __init__(self, 
                  ann_file,
@@ -38,6 +41,8 @@ class BaseMapDataset(Dataset):
                  work_dir=None,
                  eval_config=None,
                  test_mode=False,
+                 reverse_time=False,
+                 eval_regions=False,
         ):
         super().__init__()
         self.ann_file = ann_file
@@ -48,8 +53,14 @@ class BaseMapDataset(Dataset):
         self.cat2id = cat2id
         self.interval = interval
         self.seq_split_num = seq_split_num
+        self.reverse_time = reverse_time
+        self.eval_regions = eval_regions
 
         self.load_annotations(self.ann_file)
+        if self.reverse_time:
+            # samples are stored scene by scene in time order, so reversing the
+            # list reverses both the scene order and the frame order inside scenes
+            self.samples = self.samples[::-1]
         self.idx2token = {}
         for i, s in enumerate(self.samples):
             self.idx2token[i] = s['token']
@@ -82,9 +93,11 @@ class BaseMapDataset(Dataset):
         
         res = []
 
+        # in reversed order a scene starts at its last frame
+        start_key = 'next' if self.reverse_time else 'prev'
         curr_sequence = -1
         for idx in range(len(self.samples)):
-            if self.samples[idx]['prev'] == -1:
+            if self.samples[idx][start_key] == -1:
                 # new sequence
                 curr_sequence += 1
             res.append(curr_sequence)
@@ -233,7 +246,7 @@ class BaseMapDataset(Dataset):
         return self._evaluate(result_path, logger=logger)
     
     def _evaluate(self, result_path, logger=None):
-        self.evaluator = VectorEvaluate(self.eval_config)
+        self.evaluator = VectorEvaluate(self.eval_config, eval_regions=self.eval_regions)
         result_dict = self.evaluator.evaluate(result_path, logger=logger)
         return result_dict
 

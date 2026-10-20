@@ -146,6 +146,20 @@ class StreamMapNet(BaseMapper):
         
         return fused_feats
 
+    def extract_bev(self, img, img_metas, points=None):
+        '''
+        Out:
+            basic_bev: BEV feature of the current frame only, [B, C, H, W]
+            refined_bev: basic_bev fused with the BEV memory (same as basic_bev
+                when streaming is off), [B, C, H, W]
+        '''
+        basic_bev = self.backbone(img, img_metas=img_metas, points=points)
+        if self.streaming_bev:
+            refined_bev = self.update_bev_feature(basic_bev, img_metas)
+        else:
+            refined_bev = basic_bev
+        return basic_bev, refined_bev
+
     def forward_train(self, img, vectors, points=None, img_metas=None, **kwargs):
         '''
         Args:
@@ -169,12 +183,10 @@ class StreamMapNet(BaseMapper):
         
         bs = img.shape[0]
 
-        # Backbone
-        _bev_feats = self.backbone(img, img_metas=img_metas, points=points)
-        
+        # Backbone (+ temporal fusion)
         if self.streaming_bev:
             self.bev_memory.train()
-            _bev_feats = self.update_bev_feature(_bev_feats, img_metas)
+        _, _bev_feats = self.extract_bev(img, img_metas, points=points)
         
         # Neck
         bev_feats = self.neck(_bev_feats)
@@ -210,13 +222,10 @@ class StreamMapNet(BaseMapper):
         for img_meta in img_metas:
             tokens.append(img_meta['token'])
 
-        _bev_feats = self.backbone(img, img_metas, points=points)
-        img_shape = [_bev_feats.shape[2:] for i in range(_bev_feats.shape[0])]
-
         if self.streaming_bev:
             self.bev_memory.eval()
-            _bev_feats = self.update_bev_feature(_bev_feats, img_metas)
-            
+        _, _bev_feats = self.extract_bev(img, img_metas, points=points)
+
         # Neck
         bev_feats = self.neck(_bev_feats)
 

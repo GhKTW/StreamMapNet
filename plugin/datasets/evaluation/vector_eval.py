@@ -7,7 +7,7 @@ from .AP import instance_match, average_precision
 import prettytable
 from time import time
 from functools import cached_property
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
 from numpy.typing import NDArray
 from typing import Dict, List, Optional
 from logging import Logger
@@ -21,16 +21,27 @@ THRESHOLDS = [0.5, 1.0, 1.5] # AP thresholds
 N_WORKERS = 16 # num workers to parallel
 SAMPLE_DIST = 0.15
 
+
+def _limit_worker_threads():
+    ''' One thread per eval worker: with N_WORKERS processes each running torch/BLAS
+    on all cores, the machine is oversubscribed and evaluation slows down a lot. '''
+    import torch
+    from threadpoolctl import threadpool_limits
+    torch.set_num_threads(1)
+    threadpool_limits(1)
+
 class VectorEvaluate(object):
     """Evaluator for vectorized map.
 
     Args:
         dataset_cfg (Config): dataset cfg for gt
         n_workers (int): num workers to parallel
+        eval_regions (bool): also report A-mAP / R-mAP on the ahead / rear halves
     """
 
-    def __init__(self, dataset_cfg: Config, n_workers: int=N_WORKERS) -> None:
+    def __init__(self, dataset_cfg: Config, n_workers: int=N_WORKERS, eval_regions: bool=False) -> None:
         self.dataset = build_dataset(dataset_cfg)
+        self.eval_regions = eval_regions
         self.cat2id = self.dataset.cat2id
         self.id2cat = {v: k for k, v in self.cat2id.items()}
         self.n_workers = n_workers
@@ -189,8 +200,6 @@ class VectorEvaluate(object):
         
         # re-group samples and gt by label
         samples_by_cls = {label: [] for label in self.id2cat.keys()}
-        num_gts = {label: 0 for label in self.id2cat.keys()}
-        num_preds = {label: 0 for label in self.id2cat.keys()}
 
         # align by token
         for token, gt in self.gts.items():
@@ -214,16 +223,58 @@ class VectorEvaluate(object):
 
             for label in self.id2cat.keys():
                 new_sample = (vectors_by_cls[label], scores_by_cls[label], gt[label])
-                num_gts[label] += len(gt[label])
-                num_preds[label] += len(scores_by_cls[label])
                 samples_by_cls[label].append(new_sample)
+
+        result_dict = self._evaluate_samples(samples_by_cls, metric, logger, title='all')
+
+        new_result_dict = {}
+        for name in self.cat2id:
+            new_result_dict[name] = result_dict[name]['AP']
+        new_result_dict['mAP'] = result_dict['mAP']
+
+        if self.eval_regions:
+            # ego heading is +x: ahead half is x in [0, xmax], rear half is x in [xmin, 0]
+            half_x, half_y = self.roi_size[0] / 2, self.roi_size[1] / 2
+            regions = {
+                'ahead': box(0, -half_y, half_x, half_y),
+                'rear': box(-half_x, -half_y, 0, half_y),
+            }
+            prefix = {'ahead': 'A', 'rear': 'R'}
+            for region_name, region in regions.items():
+                region_samples = {
+                    label: [clip_sample_to_region(*sample, region) for sample in samples]
+                    for label, samples in samples_by_cls.items()}
+                region_result = self._evaluate_samples(
+                    region_samples, metric, logger, title=region_name)
+                for name in self.cat2id:
+                    new_result_dict[f'{prefix[region_name]}-{name}'] = region_result[name]['AP']
+                new_result_dict[f'{prefix[region_name]}-mAP'] = region_result['mAP']
+
+        return new_result_dict
+
+    def _evaluate_samples(self,
+                          samples_by_cls: Dict[int, List],
+                          metric: str,
+                          logger: Optional[Logger],
+                          title: str) -> Dict:
+        ''' Compute AP per category for samples grouped by label.
+
+        Args:
+            samples_by_cls (Dict): {label: List[(pred_lines, scores, gts)]}
+            title (str): name printed above the result table
+
+        Returns:
+            result_dict (Dict): {category: {num_gts, num_preds, AP@thr, AP}, 'mAP': float}
+        '''
+        num_gts = {label: sum(len(s[2]) for s in samples) for label, samples in samples_by_cls.items()}
+        num_preds = {label: sum(len(s[1]) for s in samples) for label, samples in samples_by_cls.items()}
 
         result_dict = {}
 
-        print(f'\nevaluating {len(self.id2cat)} categories...')
+        print(f'\nevaluating {len(self.id2cat)} categories ({title})...')
         start = time()
         if self.n_workers > 0:
-            pool = Pool(self.n_workers)
+            pool = Pool(self.n_workers, initializer=_limit_worker_threads)
         
         sum_mAP = 0
         pbar = mmcv.ProgressBar(len(self.id2cat))
@@ -288,18 +339,47 @@ class VectorEvaluate(object):
             ])
         
         from mmcv.utils import print_log
-        print_log('\n'+str(table), logger=logger)
+        print_log(f'\n[{title}]\n'+str(table), logger=logger)
         mAP_normal = 0
         for label in self.id2cat.keys():
             for thr in self.thresholds:
                 mAP_normal += result_dict[self.id2cat[label]][f'AP@{thr}']
         mAP_normal = mAP_normal / 9
 
-        print_log(f'mAP_normal = {mAP_normal:.4f}\n', logger=logger)
+        print_log(f'[{title}] mAP_normal = {mAP_normal:.4f}\n', logger=logger)
         # print_log(f'mAP_hard = {mAP_easy:.4f}\n', logger=logger)
 
-        new_result_dict = {}
-        for name in self.cat2id:
-            new_result_dict[name] = result_dict[name]['AP']
+        return result_dict
 
-        return new_result_dict
+
+def _clip_lines(lines: List, region) -> List[NDArray]:
+    ''' Clip polylines to a region and return the pieces inside it.
+    A line that crosses the region border twice becomes several pieces. '''
+    pieces = []
+    for line in lines:
+        line = np.asarray(line)[:, :2]
+        geom = LineString(line).intersection(region)
+        if geom.is_empty:
+            continue
+        if geom.geom_type == 'LineString':
+            parts = [geom]
+        elif geom.geom_type in ('MultiLineString', 'GeometryCollection'):
+            parts = [g for g in geom.geoms if g.geom_type == 'LineString']
+        else: # Point, MultiPoint: touches the border only
+            parts = []
+        for part in parts:
+            if part.length > 1e-3:
+                pieces.append(np.array(part.coords))
+    return pieces
+
+
+def clip_sample_to_region(pred_vectors: List, scores: List, groundtruth: List, region):
+    ''' Clip predictions and gts of one sample to a region (A-mAP / R-mAP).
+    Each clipped piece of a prediction keeps the score of the original prediction. '''
+    new_preds, new_scores = [], []
+    for vector, score in zip(pred_vectors, scores):
+        pieces = _clip_lines([vector], region)
+        new_preds.extend(pieces)
+        new_scores.extend([score] * len(pieces))
+    new_gts = _clip_lines(groundtruth, region)
+    return new_preds, new_scores, new_gts

@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import mmcv
 import os
 import os.path as osp
@@ -180,7 +181,12 @@ def main():
         distributed = False
     else:
         distributed = True
-        init_dist(args.launcher, **cfg.dist_params)
+        dist_params = dict(cfg.dist_params)
+        # long evaluations on rank 0 make other ranks wait in a collective;
+        # the default 30 min timeout kills them
+        if 'timeout_minutes' in dist_params:
+            dist_params['timeout'] = datetime.timedelta(minutes=dist_params.pop('timeout_minutes'))
+        init_dist(args.launcher, **dist_params)
 
     # set random seeds
     if args.seed is not None:
