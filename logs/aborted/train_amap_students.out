@@ -1,0 +1,9 @@
+[2026-10-20 20:08:07] kd: start (attempt 0)
+[2026-10-20 20:08:12] kd: exit code 0
+[2026-10-20 20:08:15] kd: start (attempt 1)
+[2026-10-20 20:08:20] kd: exit code 0
+[2026-10-20 20:08:22] kd: start (attempt 2)
+[2026-10-20 20:08:28] kd: exit code 0
+[2026-10-20 20:08:30] kd: not finished after 2 retries, see logs/train_amap_kd.out
+[2026-10-20 20:08:32] baseline: start (attempt 0)
+[2026-10-20 20:08:36] baseline: exit code 0
